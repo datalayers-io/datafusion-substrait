@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::logical_plan::producer::{
-    DefaultSubstraitProducer, SubstraitProducer, to_substrait_named_struct,
+    DefaultSubstraitProducer, SubstraitProducer, flatten_names,
 };
 use datafusion::execution::SessionState;
 use datafusion::logical_expr::{LogicalPlan, SubqueryAlias};
@@ -33,10 +33,16 @@ pub fn to_substrait_plan(
     // Note: Only 1 relation tree is currently supported
 
     let mut producer: DefaultSubstraitProducer = DefaultSubstraitProducer::new(state);
+    // RelRoot stores names only. Encoding its output types here would reject
+    // types such as FixedSizeList even when the relation tree is serializable.
+    let mut names = Vec::with_capacity(plan.schema().fields().len());
+    for field in plan.schema().fields() {
+        flatten_names(field, false, &mut names)?;
+    }
     let plan_rels = vec![PlanRel {
         rel_type: Some(plan_rel::RelType::Root(RelRoot {
             input: Some(*producer.handle_plan(plan)?),
-            names: to_substrait_named_struct(&mut producer, plan.schema())?.names,
+            names,
         })),
     }];
 
