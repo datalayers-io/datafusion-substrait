@@ -18,7 +18,10 @@
 use crate::logical_plan::consumer::SubstraitConsumer;
 use crate::logical_plan::consumer::types::from_substrait_type;
 use crate::logical_plan::consumer::utils::{DEFAULT_TIMEZONE, next_struct_field_name};
-use crate::variation_const::FLOAT_16_TYPE_NAME;
+use crate::variation_const::{
+    DECIMAL_128_TYPE_VARIATION_REF, DECIMAL_256_TYPE_VARIATION_REF,
+    DECIMAL_32_TYPE_VARIATION_REF, DECIMAL_64_TYPE_VARIATION_REF, FLOAT_16_TYPE_NAME,
+};
 #[expect(deprecated)]
 use crate::variation_const::{
     DEFAULT_CONTAINER_TYPE_VARIATION_REF, DEFAULT_TYPE_VARIATION_REF,
@@ -231,7 +234,29 @@ pub(crate) fn from_substrait_literal(
             let s = d.scale.try_into().map_err(|e| {
                 substrait_datafusion_err!("Failed to parse decimal scale: {e}")
             })?;
-            ScalarValue::Decimal128(Some(i128::from_le_bytes(value)), p, s)
+            let value = i128::from_le_bytes(value);
+            match lit.type_variation_reference {
+                DECIMAL_32_TYPE_VARIATION_REF => ScalarValue::Decimal32(
+                    Some(i32::try_from(value).map_err(|e| {
+                        substrait_datafusion_err!("Failed to parse Decimal32 value: {e}")
+                    })?),
+                    p,
+                    s,
+                ),
+                DECIMAL_64_TYPE_VARIATION_REF => ScalarValue::Decimal64(
+                    Some(i64::try_from(value).map_err(|e| {
+                        substrait_datafusion_err!("Failed to parse Decimal64 value: {e}")
+                    })?),
+                    p,
+                    s,
+                ),
+                DECIMAL_128_TYPE_VARIATION_REF | DECIMAL_256_TYPE_VARIATION_REF => {
+                    ScalarValue::Decimal128(Some(value), p, s)
+                }
+                others => {
+                    return substrait_err!("Unknown type variation reference {others}");
+                }
+            }
         }
         Some(LiteralType::List(l)) => {
             // Each element should start the name index from the same value, then we increase it

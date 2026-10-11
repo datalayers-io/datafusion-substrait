@@ -18,6 +18,7 @@
 use crate::logical_plan::producer::{SubstraitProducer, to_substrait_type};
 use crate::variation_const::{
     DATE_32_TYPE_VARIATION_REF, DECIMAL_128_TYPE_VARIATION_REF,
+    DECIMAL_32_TYPE_VARIATION_REF, DECIMAL_64_TYPE_VARIATION_REF,
     DEFAULT_CONTAINER_TYPE_VARIATION_REF, DEFAULT_TYPE_VARIATION_REF, FLOAT_16_TYPE_NAME,
     LARGE_CONTAINER_TYPE_VARIATION_REF, TIME_32_TYPE_VARIATION_REF,
     TIME_64_TYPE_VARIATION_REF, UNSIGNED_INTEGER_TYPE_VARIATION_REF,
@@ -258,6 +259,23 @@ pub(crate) fn to_substrait_literal(
         ScalarValue::Utf8View(Some(s)) => (
             LiteralType::String(s.clone()),
             VIEW_CONTAINER_TYPE_VARIATION_REF,
+        ),
+        ScalarValue::Decimal32(Some(v), p, s) => (
+            LiteralType::Decimal(Decimal {
+                // Substrait decimal literals use 16 little-endian bytes.
+                value: (*v as i128).to_le_bytes().to_vec(),
+                precision: *p as i32,
+                scale: *s as i32,
+            }),
+            DECIMAL_32_TYPE_VARIATION_REF,
+        ),
+        ScalarValue::Decimal64(Some(v), p, s) => (
+            LiteralType::Decimal(Decimal {
+                value: (*v as i128).to_le_bytes().to_vec(),
+                precision: *p as i32,
+                scale: *s as i32,
+            }),
+            DECIMAL_64_TYPE_VARIATION_REF,
         ),
         ScalarValue::Decimal128(v, p, s) if v.is_some() => (
             LiteralType::Decimal(Decimal {
@@ -545,6 +563,52 @@ mod tests {
             57, 123456,
         ))))?;
 
+        round_trip_literal(ScalarValue::Decimal32(Some(-123), 8, 2))?;
+        round_trip_literal(ScalarValue::Decimal32(Some(123), 8, 2))?;
+        round_trip_literal(ScalarValue::Decimal32(None, 8, 2))?;
+        round_trip_literal(ScalarValue::Decimal64(Some(-123), 8, 2))?;
+        round_trip_literal(ScalarValue::Decimal64(Some(123), 8, 2))?;
+        round_trip_literal(ScalarValue::Decimal64(None, 8, 2))?;
+        round_trip_literal(ScalarValue::Decimal128(Some(123), 8, 2))?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_decimal_literal_uses_substrait_width() -> Result<()> {
+        let state = SessionContext::default().state();
+        let mut producer = DefaultSubstraitProducer::new(&state);
+        for (scalar, variation) in [
+            (
+                ScalarValue::Decimal32(Some(-123), 8, 2),
+                DECIMAL_32_TYPE_VARIATION_REF,
+            ),
+            (
+                ScalarValue::Decimal64(Some(-123), 8, 2),
+                DECIMAL_64_TYPE_VARIATION_REF,
+            ),
+        ] {
+            let literal = to_substrait_literal(&mut producer, &scalar)?;
+            assert_eq!(literal.type_variation_reference, variation);
+            let Some(LiteralType::Decimal(decimal)) = literal.literal_type else {
+                panic!("expected a decimal literal");
+            };
+            assert_eq!(decimal.value.len(), 16);
+            assert_eq!(decimal.value, (-123i128).to_le_bytes().to_vec());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_decimal_literal_rejects_out_of_range_coefficient() -> Result<()> {
+        let state = SessionContext::default().state();
+        let mut producer = DefaultSubstraitProducer::new(&state);
+        let mut literal = to_substrait_literal(
+            &mut producer,
+            &ScalarValue::Decimal128(Some(i64::MAX as i128), 19, 0),
+        )?;
+        literal.type_variation_reference = DECIMAL_32_TYPE_VARIATION_REF;
+        assert!(from_substrait_literal_without_names(&test_consumer(), &literal).is_err());
         Ok(())
     }
 
